@@ -1,0 +1,218 @@
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import io.xlate.edi.stream.EDIOutputFactory;
+import io.xlate.edi.stream.EDIStreamException;
+import io.xlate.edi.stream.EDIStreamWriter;
+
+public class EdiWriterExample {
+	
+	public static final class EdiWriteContext {
+		
+		private final Map<String,List<Map<Integer,List<String>>>> ediMessageMap = new LinkedHashMap<String,List<Map<Integer,List<String>>>>();
+		
+		public void persistSegement(EdiSegement segement) {
+			if(segement!=null) {
+				String segementName = segement.getName();
+				Map<Integer, List<String>> segementMap = segement.getSegementMap();
+				ediMessageMap.computeIfAbsent(segementName, k -> new ArrayList<Map<Integer,List<String>>>()).add(segementMap);
+			}
+		}
+
+		public Map<String, List<Map<Integer, List<String>>>> getEdiMessageMap() {
+			return ediMessageMap;
+		}
+		
+	}
+	
+	public static class EdiSegement {
+		
+		private String name;
+		private final Map<Integer,List<String>> segementMap = new LinkedHashMap<Integer, List<String>>();
+		
+		public EdiSegement(String name) {
+			this.name = name;
+		}
+
+		public Map<Integer, List<String>> getSegementMap() {
+			return segementMap;
+		}
+
+		public String getName() {
+			return name;
+		}
+		
+		public void persistElement(EdiElement element) {
+			if(element!=null) {
+				int priority = element.getPriority();
+				List<String> components = element.getComponents();
+				for(String data : components) {
+					segementMap.computeIfAbsent(priority, k -> new ArrayList<>()).add(data);
+				}
+			}
+		}
+		
+	}
+	
+	public static class EdiElement {
+		
+		private final int priority;
+		private final List<String> components = new ArrayList<String>();
+		
+		public EdiElement (int priority) {
+			this.priority = priority;
+		}
+		
+		public EdiElement (int priority, String data) {
+			this.priority = priority;
+			persistComponent(data);
+		}
+		
+		public EdiElement (int priority, String... dataArrays) {
+			this.priority = priority;
+			persistComponent(Arrays.asList(dataArrays));
+		}
+		
+		public EdiElement (int priority, List<String> dataList) {
+			this.priority = priority;
+			persistComponent(dataList);
+		}
+		
+		public int getPriority() {
+			return priority;
+		}
+
+		public List<String> getComponents() {
+			return components;
+		}
+
+
+		public void persistComponent(String data){
+			if(data!=null) {
+				components.add(data);
+			}
+		}
+		
+		public void persistComponent(List<String> dataList){
+			if(dataList!=null) {
+				for(String data : dataList) {
+					persistComponent(data);
+				}
+			}
+		}
+		
+	}
+	
+    public static void main(String[] args) {
+    	
+        EDIOutputFactory factory = EDIOutputFactory.newFactory();
+        //factory.setProperty(EDIStreamConstants.Delimiters.SEGMENT, '\'');      // 세그먼트 종료자 (')
+        //factory.setProperty(EDIStreamConstants.Delimiters.DATA_ELEMENT, '+'); // 엘리먼트 구분자 (+)
+        //factory.setProperty(EDIStreamConstants.Delimiters.COMPONENT_ELEMENT, ':');    // 복합 서랍장 구분자 (:)
+        factory.setProperty(EDIOutputFactory.PRETTY_PRINT, false);
+
+        try (OutputStream stream = new PrintStream(System.out);
+        	 EDIStreamWriter writer = factory.createEDIStreamWriter(stream);
+        ) {
+        	
+            // ==========================================
+            // 2. UNB 세그먼트 (인터체인지 헤더)
+            // 데이터: UNB+KECA:4+BWH04077153:57+KCS4G002:57+20260921:1115+90000000002803++CUSCAR++0'
+            // ==========================================
+        	EdiWriteContext ctx = new EdiWriteContext();
+        	
+        	EdiSegement unb = new EdiSegement("UNB");
+        	unb.persistElement(new EdiElement(1,"KECA","4"));
+        	unb.persistElement(new EdiElement(2,"BWH04077153","57"));
+        	unb.persistElement(new EdiElement(3,"KCS4G002","57"));
+        	unb.persistElement(new EdiElement(4,"20260921","1115"));
+        	unb.persistElement(new EdiElement(5,"90000000002803"));
+        	unb.persistElement(new EdiElement(7,"CUSCAR"));
+        	unb.persistElement(new EdiElement(9,"0"));
+            
+            ctx.persistSegement(unb);
+            
+            writeEdiMessage(writer,ctx);
+
+            System.out.println();
+            System.out.println("EDI 파일 작성이 완료되었습니다.");
+        } 
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+    }
+    
+    @SuppressWarnings("public user API")
+    public static void writeEdiMessage(EDIStreamWriter writer, EdiWriteContext context) throws EDIStreamException {
+    	writeEdiMessage(writer,context.getEdiMessageMap());
+    }
+    
+    @SuppressWarnings("library function")
+    public static void writeEdiMessage(EDIStreamWriter writer,  Map<String,List<Map<Integer,List<String>>>> ediMessageMap) throws EDIStreamException {
+    	
+    	writer.startInterchange();
+    	
+    	for(Map.Entry<String, List<Map<Integer, List<String>>>> en : ediMessageMap.entrySet()) {
+    		
+    		String segementName = en.getKey();
+    		List<Map<Integer, List<String>>> segementItems = en.getValue();
+    		
+    		for(Map<Integer,List<String>> segementItem : segementItems) {
+    			
+    			ArrayList<List<String>> elements = new ArrayList<List<String>>();
+    			
+    			int maxElements = segementItem.keySet().stream().max(Integer::compare).orElse(0);
+    			
+    			for (int i = 1; i <= maxElements; i++) {
+    				List<String> val = segementItem.get(i);
+    				if (val == null) {
+    					elements.add(new ArrayList<String>());
+    				} else {
+    					elements.add(val);
+    				}
+    			}
+    			
+    			writeSegement(writer,segementName,elements);
+    		}
+    		
+    	}
+    	
+    	writer.endInterchange(); 
+    }
+    
+    @SuppressWarnings("library function")
+    public static void writeSegement(EDIStreamWriter writer, String segementName, List<List<String>> elements) throws EDIStreamException {
+    	
+    	writer.writeStartSegment(segementName);
+    	if(elements.isEmpty()) {
+    		writer.writeEmptyElement();
+    	}
+    	else {
+	    	for(List<String> element : elements) {
+	    		writeElement(writer,element);
+	    	}
+    	}
+    	writer.writeEndSegment();
+    }
+    
+    @SuppressWarnings("library function")
+    public static void writeElement(EDIStreamWriter writer, List<String> element) throws EDIStreamException {
+    	writer.writeStartElement();
+    	if(element.isEmpty()){
+    		writer.writeEmptyComponent();
+    	}
+    	else {
+	    	for(String component : element) {
+	    		writer.writeComponent(component);
+	    	}
+    	}
+    	writer.endElement();
+    }
+    
+}
