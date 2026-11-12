@@ -1,218 +1,515 @@
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
-import java.io.PrintStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
+import io.xlate.edi.schema.EDISchemaException;
 import io.xlate.edi.stream.EDIOutputFactory;
+import io.xlate.edi.stream.EDIStreamConstants;
 import io.xlate.edi.stream.EDIStreamException;
 import io.xlate.edi.stream.EDIStreamWriter;
 
-public class EdiWriterExample {
-	
-	public static final class EdiWriteContext {
-		
-		private final Map<String,List<Map<Integer,List<String>>>> ediMessageMap = new LinkedHashMap<String,List<Map<Integer,List<String>>>>();
-		
-		public void persistSegement(EdiSegement segement) {
-			if(segement!=null) {
-				String segementName = segement.getName();
-				Map<Integer, List<String>> segementMap = segement.getSegementMap();
-				ediMessageMap.computeIfAbsent(segementName, k -> new ArrayList<Map<Integer,List<String>>>()).add(segementMap);
-			}
-		}
 
-		public Map<String, List<Map<Integer, List<String>>>> getEdiMessageMap() {
-			return ediMessageMap;
-		}
-		
-	}
-	
-	public static class EdiSegement {
-		
-		private String name;
-		private final Map<Integer,List<String>> segementMap = new LinkedHashMap<Integer, List<String>>();
-		
-		public EdiSegement(String name) {
-			this.name = name;
-		}
+class EdiGenerator {
 
-		public Map<Integer, List<String>> getSegementMap() {
-			return segementMap;
-		}
+	static {
+    	Logger.getLogger("io.xlate.edi.internal.stream").setLevel(Level.SEVERE);
+    }
 
-		public String getName() {
-			return name;
-		}
-		
-		public void persistElement(EdiElement element) {
-			if(element!=null) {
-				int priority = element.getPriority();
-				List<String> components = element.getComponents();
-				for(String data : components) {
-					segementMap.computeIfAbsent(priority, k -> new ArrayList<>()).add(data);
-				}
-			}
-		}
-		
-	}
-	
-	public static class EdiElement {
-		
-		private final int priority;
-		private final List<String> components = new ArrayList<String>();
-		
-		public EdiElement (int priority) {
-			this.priority = priority;
-		}
-		
-		public EdiElement (int priority, String data) {
-			this.priority = priority;
-			persistComponent(data);
-		}
-		
-		public EdiElement (int priority, String... dataArrays) {
-			this.priority = priority;
-			persistComponent(Arrays.asList(dataArrays));
-		}
-		
-		public EdiElement (int priority, List<String> dataList) {
-			this.priority = priority;
-			persistComponent(dataList);
-		}
-		
-		public int getPriority() {
-			return priority;
-		}
+    private final Character segmentDelimiter;
+    private final Character elementDelimiter;
+    private final Character componentDelimiter;
+    private final Character releaseIndicator;
+    private final boolean prettyPrint;
+    private final Charset charset;
 
-		public List<String> getComponents() {
-			return components;
-		}
+    private EdiGenerator(Builder builder) {
+        this.segmentDelimiter = builder.segmentDelimiter;
+        this.elementDelimiter = builder.elementDelimiter;
+        this.componentDelimiter = builder.componentDelimiter;
+        this.releaseIndicator = builder.releaseIndicator;
+        this.prettyPrint = builder.prettyPrint;
+        this.charset = builder.charset;
+    }
 
+    public static Builder builder() {
+        return new Builder();
+    }
 
-		public void persistComponent(String data){
-			if(data!=null) {
-				components.add(data);
-			}
-		}
-		
-		public void persistComponent(List<String> dataList){
-			if(dataList!=null) {
-				for(String data : dataList) {
-					persistComponent(data);
-				}
-			}
-		}
-		
-	}
-	
-    public static void main(String[] args) {
+    /**
+     * 설정된 옵션을 바탕으로 StAEDI의 EDIOutputFactory를 생성합니다.
+     * 구분자가 null인 경우 StAEDI 기본값(' + : ?)을 사용하며 UNA 헤더를 강제 출력 X
+     */
+    public EDIOutputFactory buildFactory() {
     	
         EDIOutputFactory factory = EDIOutputFactory.newFactory();
-        //factory.setProperty(EDIStreamConstants.Delimiters.SEGMENT, '\'');      // 세그먼트 종료자 (')
-        //factory.setProperty(EDIStreamConstants.Delimiters.DATA_ELEMENT, '+'); // 엘리먼트 구분자 (+)
-        //factory.setProperty(EDIStreamConstants.Delimiters.COMPONENT_ELEMENT, ':');    // 복합 서랍장 구분자 (:)
-        factory.setProperty(EDIOutputFactory.PRETTY_PRINT, false);
 
-        try (OutputStream stream = new PrintStream(System.out);
-        	 EDIStreamWriter writer = factory.createEDIStreamWriter(stream);
-        ) {
-        	
-            // ==========================================
-            // 2. UNB 세그먼트 (인터체인지 헤더)
-            // 데이터: UNB+KECA:4+BWH04077153:57+KCS4G002:57+20260921:1115+90000000002803++CUSCAR++0'
-            // ==========================================
-        	EdiWriteContext ctx = new EdiWriteContext();
-        	
-        	EdiSegement unb = new EdiSegement("UNB");
-        	unb.persistElement(new EdiElement(1,"KECA","4"));
-        	unb.persistElement(new EdiElement(2,"BWH04077153","57"));
-        	unb.persistElement(new EdiElement(3,"KCS4G002","57"));
-        	unb.persistElement(new EdiElement(4,"20260921","1115"));
-        	unb.persistElement(new EdiElement(5,"90000000002803"));
-        	unb.persistElement(new EdiElement(7,"CUSCAR"));
-        	unb.persistElement(new EdiElement(9,"0"));
-            
-            ctx.persistSegement(unb);
-            
-            writeEdiMessage(writer,ctx);
+        if (segmentDelimiter != null) {
+            factory.setProperty(EDIStreamConstants.Delimiters.SEGMENT, segmentDelimiter);
+        }
+        
+        if (elementDelimiter != null) {
+            factory.setProperty(EDIStreamConstants.Delimiters.DATA_ELEMENT, elementDelimiter);
+        }
+        
+        if (componentDelimiter != null) {
+            factory.setProperty(EDIStreamConstants.Delimiters.COMPONENT_ELEMENT, componentDelimiter);
+        }
+        
+        if (releaseIndicator != null) {
+            factory.setProperty(EDIStreamConstants.Delimiters.RELEASE, releaseIndicator);
+        }
 
-            System.out.println();
-            System.out.println("EDI 파일 작성이 완료되었습니다.");
-        } 
-        catch (Exception e) {
-            e.printStackTrace();
+        factory.setProperty(EDIOutputFactory.PRETTY_PRINT, prettyPrint);
+        return factory;
+    }
+
+    public byte[] toBytes(EdiWriteContext context) {
+    	
+        EDIOutputFactory factory = buildFactory();
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             EDIStreamWriter writer = factory.createEDIStreamWriter(baos, charset.name())) {
+
+            writeEdiMessage(writer, context);
+            writer.flush();
+            return baos.toByteArray();
+
+        }
+        catch (EDISchemaException | EDIStreamException | IOException e) {
+            throw new RuntimeException("EDIFACT 전문 바이트 생성 중 오류가 발생했습니다.", e);
         }
         
     }
+
+    public String toString(EdiWriteContext context) {
+        return new String(toBytes(context), charset);
+    }
+
+    public void writeTo(EdiWriteContext context, OutputStream outputStream) {
+        EDIOutputFactory factory = buildFactory();
+        try (EDIStreamWriter writer = factory.createEDIStreamWriter(outputStream, charset.name())) {
+            writeEdiMessage(writer, context);
+            writer.flush();
+        } 
+        catch (EDISchemaException | EDIStreamException e) {
+            throw new RuntimeException("EDIFACT 스트림 출력 중 오류가 발생했습니다.", e);
+        } 
+    }
+
+    public static final class Builder {
+    	
+        private Character segmentDelimiter = null;   // null이면 StAEDI 기본값(') 사용
+        private Character elementDelimiter = null;   // null이면 StAEDI 기본값(+) 사용
+        private Character componentDelimiter = null; // null이면 StAEDI 기본값(:) 사용
+        private Character releaseIndicator = null;   // null이면 StAEDI 기본값(?) 사용
+        private boolean prettyPrint = false;
+        private Charset charset = StandardCharsets.UTF_8;
+
+        private Builder() {}
+
+        public Builder segmentDelimiter(char segmentDelimiter) {
+            this.segmentDelimiter = segmentDelimiter;
+            return this;
+        }
+
+        public Builder elementDelimiter(char elementDelimiter) {
+            this.elementDelimiter = elementDelimiter;
+            return this;
+        }
+
+        public Builder componentDelimiter(char componentDelimiter) {
+            this.componentDelimiter = componentDelimiter;
+            return this;
+        }
+
+        public Builder releaseIndicator(char releaseIndicator) {
+            this.releaseIndicator = releaseIndicator;
+            return this;
+        }
+
+        /**
+         * 표준 EDIFACT 구분자 UNA 헤더(UNA:+.? ')가 출력
+         */
+        public Builder withUnaHeader() {
+            this.segmentDelimiter = '\'';
+            this.elementDelimiter = '+';
+            this.componentDelimiter = ':';
+            this.releaseIndicator = '?';
+            return this;
+        }
+
+        public Builder prettyPrint(boolean prettyPrint) {
+            this.prettyPrint = prettyPrint;
+            return this;
+        }
+
+        public Builder charset(Charset charset) {
+            if (charset != null) {
+                this.charset = charset;
+            }
+            return this;
+        }
+
+        public Builder eucKr() {
+            this.charset = Charset.forName("EUC-KR");
+            return this;
+        }
+
+        public Builder utf8() {
+            this.charset = StandardCharsets.UTF_8;
+            return this;
+        }
+
+        public EdiGenerator build() {
+            return new EdiGenerator(this);
+        }
+        
+    }
+
+    private void writeEdiMessage(EDIStreamWriter writer, EdiWriteContext context) throws EDIStreamException, EDISchemaException {
+        writer.startInterchange();
+        for (EdiSegment segment : context.getSegments()) {
+            writeSegment(writer, segment);
+        }
+        writer.endInterchange();
+    }
+
+    private void writeSegment(EDIStreamWriter writer, EdiSegment segment) throws EDIStreamException {
+    	
+        writer.writeStartSegment(segment.getName());
+        Map<Integer, EdiElement> elementMap = segment.getElementMap();
+        if (elementMap.isEmpty()) {
+            writer.writeEmptyElement();
+        } else {
+            int maxElements = elementMap.keySet().stream().max(Integer::compare).orElse(0);
+            for (int i = 1; i <= maxElements; i++) {
+                EdiElement element = elementMap.get(i);
+                if (element == null) {
+                    writer.writeStartElement();
+                    writer.writeEmptyComponent();
+                    writer.endElement();
+                } else {
+                    writeElement(writer, element);
+                }
+            }
+        }
+        writer.writeEndSegment();
+        
+    }
+
+    private void writeElement(EDIStreamWriter writer, EdiElement element) throws EDIStreamException {
+    	
+        writer.writeStartElement();
+        Map<Integer, EdiComponent> componentMap = element.getComponentMap();
+        if (componentMap.isEmpty()) {
+            writer.writeEmptyComponent();
+        } else {
+            int maxComponents = componentMap.keySet().stream().max(Integer::compare).orElse(0);
+            for (int i = 1; i <= maxComponents; i++) {
+                EdiComponent component = componentMap.get(i);
+                if (component == null || component.getValue().isEmpty()) {
+                    writer.writeEmptyComponent();
+                } else {
+                    writer.writeComponent(component.getValue());
+                }
+            }
+        }
+        writer.endElement();
+        
+    }
+}
+
+
+
+class EdiWriteContext {
     
-    @SuppressWarnings("public user API")
-    public static void writeEdiMessage(EDIStreamWriter writer, EdiWriteContext context) throws EDIStreamException {
-    	writeEdiMessage(writer,context.getEdiMessageMap());
+    private final List<EdiSegment> segments = new ArrayList<>();
+
+    private String currentInterchangeControlRef = "";
+    private String currentMessageRef = "";
+    private int currentMessageSegmentCount = 0;
+    private int totalMessageCount = 0;
+    private boolean isInsideMessage = false;
+
+    public EdiWriteContext addSegment(EdiSegment segment) {
+    	
+        if (segment == null) {
+            return this;
+        }
+
+        String segName = segment.getName();
+        if ("UNB".equals(segName)) {
+            this.currentInterchangeControlRef = segment.getFirstComponentValue(5);
+            this.totalMessageCount = 0;
+        } else if ("UNH".equals(segName)) {
+            if (this.isInsideMessage) {
+                throw new IllegalStateException("이전 메시지(UNH)가 닫히지 않았습니다. addUnt()를 먼저 호출하세요.");
+            }
+            this.isInsideMessage = true;
+            this.currentMessageSegmentCount = 1; // UNH 자기 자신 포함
+            this.currentMessageRef = segment.getFirstComponentValue(1);
+        } else if (this.isInsideMessage && !"UNT".equals(segName)) {
+            this.currentMessageSegmentCount++;
+        }
+
+        segments.add(segment);
+        return this;
+    }
+
+    public EdiWriteContext addUnt() {
+    	
+        if (!this.isInsideMessage) {
+            throw new IllegalStateException("UNH 세그먼트 없이 UNT를 추가할 수 없습니다.");
+        }
+
+        this.currentMessageSegmentCount++; // UNT 자기 자신 포함
+        this.totalMessageCount++;          // 전체 메시지 건수 증가
+        this.isInsideMessage = false;      // 메시지 블록 종료
+
+        EdiSegment unt = new EdiSegment("UNT")
+            .addElement(new EdiElement(1, String.valueOf(this.currentMessageSegmentCount)))
+            .addElement(new EdiElement(2, this.currentMessageRef));
+
+        segments.add(unt);
+        return this;
+    }
+
+    /**
+     * UNB에 대응하는 UNZ 세그먼트를 자동 계산하여 추가합니다.
+     */
+    public EdiWriteContext addUnz() {
+    	
+        if (this.isInsideMessage) {
+            throw new IllegalStateException("닫히지 않은 메시지(UNH)가 있습니다. addUnt()를 먼저 호출하세요.");
+        }
+        if (this.currentInterchangeControlRef.isEmpty()) {
+            throw new IllegalStateException("UNB 세그먼트가 없거나 제어번호(5번 엘리먼트)가 비어 있습니다.");
+        }
+
+        EdiSegment unz = new EdiSegment("UNZ")
+            .addElement(new EdiElement(1, String.valueOf(this.totalMessageCount)))
+            .addElement(new EdiElement(2, this.currentInterchangeControlRef));
+
+        segments.add(unz);
+        return this;
+        
+    }
+
+    public List<EdiSegment> getSegments() {
+        return segments;
     }
     
-    @SuppressWarnings("library function")
-    public static void writeEdiMessage(EDIStreamWriter writer,  Map<String,List<Map<Integer,List<String>>>> ediMessageMap) throws EDIStreamException {
-    	
-    	writer.startInterchange();
-    	
-    	for(Map.Entry<String, List<Map<Integer, List<String>>>> en : ediMessageMap.entrySet()) {
-    		
-    		String segementName = en.getKey();
-    		List<Map<Integer, List<String>>> segementItems = en.getValue();
-    		
-    		for(Map<Integer,List<String>> segementItem : segementItems) {
-    			
-    			ArrayList<List<String>> elements = new ArrayList<List<String>>();
-    			
-    			int maxElements = segementItem.keySet().stream().max(Integer::compare).orElse(0);
-    			
-    			for (int i = 1; i <= maxElements; i++) {
-    				List<String> val = segementItem.get(i);
-    				if (val == null) {
-    					elements.add(new ArrayList<String>());
-    				} else {
-    					elements.add(val);
-    				}
-    			}
-    			
-    			writeSegement(writer,segementName,elements);
-    		}
-    		
-    	}
-    	
-    	writer.endInterchange(); 
+}
+
+
+class EdiSegment {
+	
+    private final String name;
+    private final Map<Integer, EdiElement> elementMap = new LinkedHashMap<>();
+
+    public EdiSegment(String name) {
+        this.name = name;
     }
-    
-    @SuppressWarnings("library function")
-    public static void writeSegement(EDIStreamWriter writer, String segementName, List<List<String>> elements) throws EDIStreamException {
-    	
-    	writer.writeStartSegment(segementName);
-    	if(elements.isEmpty()) {
-    		writer.writeEmptyElement();
-    	}
-    	else {
-	    	for(List<String> element : elements) {
-	    		writeElement(writer,element);
-	    	}
-    	}
-    	writer.writeEndSegment();
+
+    public String getName() {
+        return name;
     }
-    
-    @SuppressWarnings("library function")
-    public static void writeElement(EDIStreamWriter writer, List<String> element) throws EDIStreamException {
-    	writer.writeStartElement();
-    	if(element.isEmpty()){
-    		writer.writeEmptyComponent();
-    	}
-    	else {
-	    	for(String component : element) {
-	    		writer.writeComponent(component);
-	    	}
-    	}
-    	writer.endElement();
+
+    public Map<Integer, EdiElement> getElementMap() {
+        return elementMap;
     }
-    
+
+    public EdiSegment addElement(EdiElement element) {
+        if (element != null) {
+            elementMap.put(element.getPriority(), element);
+        }
+        return this;
+    }
+
+    public String getFirstComponentValue(int elementPriority) {
+        EdiElement element = elementMap.get(elementPriority);
+        if (element == null) {
+            return "";
+        }
+        EdiComponent component = element.getComponentMap().get(1);
+        return (component == null) ? "" : component.getValue();
+    }
+}
+
+// =========================================================
+// 4. EdiElement.java
+// =========================================================
+class EdiElement {
+	
+    private final int priority;
+    private final Map<Integer, EdiComponent> componentMap = new LinkedHashMap<>();
+
+    public EdiElement(int priority) {
+        this.priority = priority;
+    }
+
+    public EdiElement(int priority, String... values) {
+        this.priority = priority;
+        if (values != null) {
+            for (int i = 0; i < values.length; i++) {
+                addComponent(new EdiComponent(i + 1, values[i]));
+            }
+        }
+    }
+
+    public EdiElement(int priority, List<String> valueList) {
+        this.priority = priority;
+        if (valueList != null) {
+            for (int i = 0; i < valueList.size(); i++) {
+                addComponent(new EdiComponent(i + 1, valueList.get(i)));
+            }
+        }
+    }
+
+    public int getPriority() {
+        return priority;
+    }
+
+    public Map<Integer, EdiComponent> getComponentMap() {
+        return componentMap;
+    }
+
+    public EdiElement addComponent(EdiComponent component) {
+        if (component != null) {
+            componentMap.put(component.getPriority(), component);
+        }
+        return this;
+    }
+}
+
+// =========================================================
+// 5. EdiComponent.java
+// =========================================================
+class EdiComponent {
+    private final int priority;
+    private final String value;
+
+    public EdiComponent(int priority, String value) {
+        this.priority = priority;
+        this.value = (value == null) ? "" : value;
+    }
+
+    public EdiComponent(int priority, String value, int maxEucKrBytes) {
+        this.priority = priority;
+        this.value = EdiStringUtils.truncateEucKr(value, maxEucKrBytes);
+    }
+
+    public EdiComponent(int priority, String value, int maxBytes, Charset charset) {
+        this.priority = priority;
+        this.value = EdiStringUtils.truncateByByte(value, maxBytes, charset);
+    }
+
+    public int getPriority() {
+        return priority;
+    }
+
+    public String getValue() {
+        return value;
+    }
+}
+
+class EdiStringUtils {
+
+    public static final Charset CHARSET_EUC_KR = Charset.forName("EUC-KR");
+
+    private EdiStringUtils() {}
+
+    public static String truncateByByte(String str, int maxBytes, Charset charset) {
+        if (str == null || str.isEmpty() || maxBytes <= 0) {
+            return "";
+        }
+        if (str.getBytes(charset).length <= maxBytes) {
+            return str;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        int currentBytes = 0;
+        int offset = 0;
+
+        while (offset < str.length()) {
+            int codePoint = str.codePointAt(offset);
+            int charCount = Character.charCount(codePoint);
+            String singleChar = str.substring(offset, offset + charCount);
+
+            int charByteLength = singleChar.getBytes(charset).length;
+            if (currentBytes + charByteLength > maxBytes) {
+                break;
+            }
+
+            sb.append(singleChar);
+            currentBytes += charByteLength;
+            offset += charCount;
+        }
+
+        return sb.toString();
+    }
+
+    public static String truncateEucKr(String str, int maxBytes) {
+        return truncateByByte(str, maxBytes, CHARSET_EUC_KR);
+    }
+}
+
+
+public class EdiWriterExample {
+
+	public static void main(String[] args) {
+		
+		EdiWriteContext ctx = new EdiWriteContext();
+		
+		// 1. UNB (인터체인지 시작 - 제어번호: 90000000002803)
+		ctx.addSegment(new EdiSegment("UNB").addElement(new EdiElement(1, "KECA", "4"))
+				.addElement(new EdiElement(2, "BWH04077153", "57")).addElement(new EdiElement(3, "KCS4G002", "57"))
+				.addElement(new EdiElement(4, "20260921", "1115")).addElement(new EdiElement(5, "90000000002803"))
+				.addElement(new EdiElement(7, "CUSCAR")).addElement(new EdiElement(9, "0")));
+
+		// 2. 첫 번째 메시지 블록 (UNH ~ UNT) -> 총 4개 세그먼트 예상
+		ctx.addSegment(new EdiSegment("UNH")
+				.addElement(new EdiElement(1, "MSG0001").addComponent(new EdiComponent(2,"bbo")))
+				.addElement(new EdiElement(2, "CUSCAR", "D", "96A", "UN")));
+		ctx.addSegment(new EdiSegment("BGM")
+				.addElement(new EdiElement(1, "85"))
+				.addElement(new EdiElement(2, "DOC12345")));
+		ctx.addSegment(new EdiSegment("DTM")
+				.addElement(new EdiElement(1, "137", "20260921", "102")));
+		ctx.addUnt(); // 자동으로 UNT+4+MSG0001' 생성!
+
+		// 4. 인터체인지 종료 -> 총 2건의 메시지, 제어번호 90000000002803 자동 반영
+		ctx.addUnz(); // 자동으로 UNZ+2+90000000002803' 생성!
+		
+		
+		EdiGenerator kcsGenerator = EdiGenerator.builder().eucKr().build();
+
+		byte[] payload = kcsGenerator.toBytes(ctx);
+		System.out.println(new String(payload,Charset.forName("euc-kr")));
+		// 2. 개발자 디버깅용 (UTF-8, 세그먼트별 줄바꿈 적용)
+		EdiGenerator debugGenerator = EdiGenerator.builder()
+		    .utf8()
+		    .prettyPrint(true)
+		    .build();
+
+		System.out.println(debugGenerator.toString(ctx));
+
+		// 3. 특수한 커스텀 구분자가 필요한 수신처 대응
+		EdiGenerator customGenerator = EdiGenerator.builder()
+		    .utf8()
+		    .build();
+
+		String customEdi = customGenerator.toString(ctx);
+		System.out.println(customEdi);
+	}
+
+	
+	
 }
